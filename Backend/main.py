@@ -3,11 +3,14 @@ Smart Ingredient Analyzer - FastAPI Backend
 Place this file in the SAME folder as lstm_model.keras and tokenizer.pkl
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pickle
 import os
+import io
+from PIL import Image
+import pytesseract
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -390,3 +393,12 @@ def analyze(request: AnalyzeRequest):
     if not request.ingredients.strip():
         raise HTTPException(status_code=400, detail="Ingredients cannot be empty.")
     return analyze_ingredients(request.ingredients)
+
+
+@app.post("/ocr")
+async def extract_text(file: UploadFile = File(...)):
+    contents = await file.read()
+    image = Image.open(io.BytesIO(contents))
+    text = pytesseract.image_to_string(image)
+    ingredients = [i.strip() for i in text.replace('\n', ',').split(',') if i.strip()]
+    return {"ingredients": ingredients, "raw_text": text}

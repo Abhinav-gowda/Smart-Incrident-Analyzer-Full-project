@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import Tesseract from 'tesseract.js';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ImageUpload from '@/components/ImageUpload';
@@ -8,7 +9,6 @@ import Footer from '@/components/Footer';
 import { Button } from '@/components/ui/button';
 import { ArrowRight, RotateCcw, Tag, AlertCircle } from 'lucide-react';
 
-// API URL - change this after deploying to Render
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://smart-incrident-analyzer-full-project.onrender.com';
 
 interface ApiIngredient {
@@ -65,13 +65,81 @@ const Index: React.FC = () => {
   const [productName, setProductName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const simulateOCR = useCallback(() => {
-    return new Promise<string[]>((resolve) => {
-      setTimeout(() => {
-        resolve(['Water', 'Glycerin', 'Fragrance', 'Sodium Lauryl Sulfate', 'Parabens']);
-      }, 1500);
+  // Preprocess image - invert dark backgrounds for better OCR
+  const preprocessImage = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0);
+        
+        // Get pixel data
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        
+        // Check if image is dark (dark background)
+        let darkPixels = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
+          if (brightness < 128) darkPixels++;
+        }
+        const isDarkBackground = darkPixels > (data.length / 4) * 0.5;
+        
+        // Invert if dark background
+        if (isDarkBackground) {
+          for (let i = 0; i < data.length; i += 4) {
+            data[i] = 255 - data[i];         // R
+            data[i+1] = 255 - data[i+1];     // G
+            data[i+2] = 255 - data[i+2];     // B
+            // Alpha stays the same
+          }
+          ctx.putImageData(imageData, 0, 0);
+        }
+
+        // Also increase contrast
+        ctx.filter = 'contrast(150%) brightness(110%)';
+        ctx.drawImage(canvas, 0, 0);
+        
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      
+      img.src = url;
     });
-  }, []);
+  };
+
+  // OCR using client-side Tesseract.js with image preprocessing
+  const performOCR = async (file: File): Promise<string[]> => {
+    try {
+      // Preprocess image - invert dark backgrounds for better OCR
+      const preprocessed = await preprocessImage(file);
+      
+      const { data: { text } } = await Tesseract.recognize(preprocessed, 'eng', {
+        logger: m => console.log(m)
+      });
+
+      console.log('Raw OCR text:', text); // helpful for debugging
+
+      const ingredients = text
+        .split(/[,;\n]/)
+        .map(i => i.trim())
+        .filter(i => i.length > 2 && !/^\d+$/.test(i));
+
+      if (ingredients.length === 0) {
+        throw new Error('No ingredients found');
+      }
+
+      return ingredients;
+    } catch (err) {
+      throw new Error('OCR failed');
+    }
+  };
 
   // Real API call to FastAPI backend
   const analyzeWithAPI = async (ingredientList: string[]): Promise<ApiResponse> => {
@@ -93,9 +161,15 @@ const Index: React.FC = () => {
     setShowResults(false);
     setAnalysisResults(null);
     setError(null);
-    const extracted = await simulateOCR();
-    setExtractedIngredients(extracted);
-    setIsProcessing(false);
+
+    try {
+      const extracted = await performOCR(file);
+      setExtractedIngredients(extracted);
+    } catch (err) {
+      setError('Could not extract text from image. Try entering text manually.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleTextInput = async (text: string) => {
@@ -230,13 +304,13 @@ const Index: React.FC = () => {
                       <p className="text-2xl font-bold">{apiSummary.final_product_score.toFixed(1)}</p>
                       <p className="text-xs text-muted-foreground">Final Score /10</p>
                     </div>
-                    <div>
-                      <p className={`text-lg font-bold ${
-                        apiSummary.risk_classification === 'Low Risk' ? 'text-safe' :
-                        apiSummary.risk_classification === 'Moderate Risk' ? 'text-caution' : 'text-danger'
-                      }`}>{apiSummary.risk_classification}</p>
-                      <p className="text-xs text-muted-foreground">Classification</p>
-                    </div>
+<div>
+  <p className={`text-lg font-bold ${
+    apiSummary.risk_classification === 'Safe' ? 'text-safe' :
+    apiSummary.risk_classification === 'Moderate Risk' ? 'text-caution' : 'text-danger'
+  }`}>{apiSummary.risk_classification}</p>
+  <p className="text-xs text-muted-foreground">Classification</p>
+</div>
                   </div>
                 </div>
               )}
